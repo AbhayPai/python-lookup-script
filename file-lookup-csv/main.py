@@ -7,6 +7,7 @@ import mimetypes
 import time
 import pwd
 import stat
+import datetime
 
 def setup_logging(output_csv):
     """Set up logging to output both to a file and the console."""
@@ -54,7 +55,7 @@ def get_file_permissions(file_path):
     file_permissions = stat.S_IMODE(file_stat.st_mode)
     return oct(file_permissions)
 
-def scan_directory(directory_path, output_csv):
+def scan_directory(directory_path, output_csv, cutoff_date=None):
     """Scans the directory and writes file details to a CSV file."""
     logging.info(f"Starting directory scan for {directory_path}")
 
@@ -62,7 +63,7 @@ def scan_directory(directory_path, output_csv):
         # Open the CSV file in write mode
         with open(output_csv, mode='w', newline='', encoding='utf-8') as csv_file:
             fieldnames = [
-                'Filename', 'File Size (Human-readable)', 'File Format',
+                'Filename', 'File Size', 'File Format',
                 'File Hash', 'Compression Status', 'File Type', 'Owner', 'Creation Time',
                 'Last Modified Time', 'File Permissions', 'File Path'
             ]
@@ -106,10 +107,22 @@ def scan_directory(directory_path, output_csv):
                         # Get file permissions
                         file_permissions = get_file_permissions(file_path)
 
+                        # Get both creation and last modified times as datetime objects
+                        file_creation_time = datetime.datetime.fromtimestamp(file_stat.st_ctime)
+                        file_modified_time = datetime.datetime.fromtimestamp(file_stat.st_mtime)
+
+                        # Log the times for debugging
+                        logging.debug(f"File creation time: {file_creation_time}, Last modified time: {file_modified_time}")
+
+                        if cutoff_date:
+                            if file_creation_time >= cutoff_date or file_modified_time >= cutoff_date:
+                                logging.info(f"Skipping file {file_path} as both creation and modification times are after the cutoff date.")
+                                continue
+
                         # Write the file information to CSV
                         writer.writerow({
                             'Filename': file,
-                            'File Size (Human-readable)': human_readable_size,
+                            'File Size': human_readable_size,
                             'File Format': file_format,
                             'File Hash': file_hash,
                             'Compression Status': compression_status,
@@ -136,15 +149,26 @@ def main():
     # Add the arguments for directory path and output CSV file
     parser.add_argument('directory_path', type=str, help="The directory path to scan.")
     parser.add_argument('output_csv', type=str, help="The output CSV file to save the file details.")
+    parser.add_argument('--cutoff_date', type=str, help="The cutoff date for file creation/modification (YYYY-MM-DD).")
 
     # Parse the command line arguments
     args = parser.parse_args()
+
+    # Convert cutoff date to a datetime object if provided
+    cutoff_date = None
+    if args.cutoff_date:
+        try:
+            cutoff_date = datetime.datetime.strptime(args.cutoff_date, "%Y-%m-%d")
+            logging.info(f"Cutoff date set to {cutoff_date.strftime('%Y-%m-%d')}")
+        except ValueError:
+            logging.error("Invalid date format for --cutoff_date. Please use YYYY-MM-DD.")
+            return
 
     # Set up logging
     setup_logging(args.output_csv)
 
     # Call the scan_directory function with parsed arguments
-    scan_directory(args.directory_path, args.output_csv)
+    scan_directory(args.directory_path, args.output_csv, cutoff_date)
 
 if __name__ == "__main__":
     main()
