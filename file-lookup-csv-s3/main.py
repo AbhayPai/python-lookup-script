@@ -9,6 +9,7 @@ import pwd
 import stat
 import boto3
 from botocore.exceptions import ClientError
+from datetime import datetime
 
 def setup_logging(output_csv):
     """Set up logging to output both to a file and the console."""
@@ -57,18 +58,17 @@ def get_file_permissions(file_path):
     return oct(file_permissions)
 
 def upload_file_to_s3(file_path, bucket_name, s3_client):
-    """Uploads a file to the specified S3 bucket and returns success status."""
+    """Upload a file to S3 and return the upload status."""
     try:
-        # Generate S3 object key (using file name as the key)
         file_name = os.path.basename(file_path)
-        s3_client.upload_file(file_path, bucket_name, file_name)
-        logging.info(f"File {file_path} uploaded successfully to S3.")
+        unique_file_name = f"{file_name}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+        s3_client.upload_file(file_path, bucket_name, unique_file_name)
         return 'Success'
-    except ClientError as e:
-        logging.error(f"Error uploading {file_path} to S3: {e}")
-        return 'Failure'
+    except Exception as e:
+        logging.error(f"Unexpected error while uploading {file_path}: {e.response['Error']['Code']}")
+        return 'Failed - Unknown Error'
 
-def scan_directory(directory_path, output_csv, bucket_name, s3_client):
+def scan_directory(directory_path, output_csv, bucket_name, s3_client, cutoff_date=None):
     """Scans the directory and writes file details to a CSV file, uploading files to S3."""
     logging.info(f"Starting directory scan for {directory_path}")
 
@@ -76,9 +76,9 @@ def scan_directory(directory_path, output_csv, bucket_name, s3_client):
         # Open the CSV file in write mode
         with open(output_csv, mode='w', newline='', encoding='utf-8') as csv_file:
             fieldnames = [
-                'Filename', 'File Size (Human-readable)', 'File Format',
+                'Filename', 'File Size', 'File Format',
                 'File Hash', 'Compression Status', 'File Type', 'Owner', 'Creation Time',
-                'Last Modified Time', 'File Permissions', 'File Path', 'Upload Status'
+                'Last Modified Time', 'File Permissions', 'Original Filepath', 'Upload Status'
             ]
             writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
 
@@ -123,10 +123,22 @@ def scan_directory(directory_path, output_csv, bucket_name, s3_client):
                         # Attempt to upload the file to S3
                         upload_status = upload_file_to_s3(file_path, bucket_name, s3_client)
 
+                        # Get both creation and last modified times as datetime objects
+                        file_creation_time = datetime.datetime.fromtimestamp(file_stat.st_ctime)
+                        file_modified_time = datetime.datetime.fromtimestamp(file_stat.st_mtime)
+
+                        # Log the times for debugging
+                        logging.debug(f"File creation time: {file_creation_time}, Last modified time: {file_modified_time}")
+
+                        if cutoff_date:
+                            if file_creation_time >= cutoff_date or file_modified_time >= cutoff_date:
+                                logging.info(f"Skipping file {file_path} as both creation and modification times are after the cutoff date.")
+                                continue
+
                         # Write the file information to CSV
                         writer.writerow({
                             'Filename': file,
-                            'File Size (Human-readable)': human_readable_size,
+                            'File Size': human_readable_size,
                             'File Format': file_format,
                             'File Hash': file_hash,
                             'Compression Status': compression_status,
@@ -155,6 +167,7 @@ def main():
     parser.add_argument('directory_path', type=str, help="The directory path to scan.")
     parser.add_argument('output_csv', type=str, help="The output CSV file to save the file details.")
     parser.add_argument('bucket_name', type=str, help="The S3 bucket name to upload files.")
+    parser.add_argument('--cutoff_date', type=str, help="The cutoff date for file creation/modification (YYYY-MM-DD).")
 
     # Parse the command line arguments
     args = parser.parse_args()
@@ -165,8 +178,18 @@ def main():
     # Initialize S3 client
     s3_client = boto3.client('s3')
 
+    # Convert cutoff date to a datetime object if provided
+    cutoff_date = None
+    if args.cutoff_date:
+        try:
+            cutoff_date = datetime.datetime.strptime(args.cutoff_date, "%Y-%m-%d")
+            logging.info(f"Cutoff date set to {cutoff_date.strftime('%Y-%m-%d')}")
+        except ValueError:
+            logging.error("Invalid date format for --cutoff_date. Please use YYYY-MM-DD.")
+            return
+
     # Call the scan_directory function with parsed arguments
-    scan_directory(args.directory_path, args.output_csv, args.bucket_name, s3_client)
+    scan_directory(args.directory_path, args.output_csv, args.bucket_name, s3_client, cutoff_date)
 
 if __name__ == "__main__":
     main()
